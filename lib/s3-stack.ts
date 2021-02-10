@@ -7,7 +7,8 @@ export class S3Stack extends cdk.Stack {
 
     const bucket = new s3.Bucket(this, 'nbenaglia-bucket', {
       encryption: s3.BucketEncryption.UNENCRYPTED,
-      removalPolicy: cdk.RemovalPolicy.DESTROY
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      versioned: true
     });
   }
 }
