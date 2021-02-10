@@ -1,3 +1,4 @@
+import { Ec2HealthCheckOptions } from '@aws-cdk/aws-autoscaling';
 import * as cdk from '@aws-cdk/core';
 
 export interface MyProps extends cdk.StackProps {

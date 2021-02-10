@@ -1,11 +1,8 @@
 #!/usr/bin/env node
 import 'source-map-support/register';
 import * as cdk from '@aws-cdk/core';
-import { S3Stack } from '../lib/s3-stack';
-import { CodeCommitStack } from '../lib/codecommit-stack';
-import { IamStack } from '../lib/iam-stack';
+import { DevopsStack } from '../lib/devops-stack';
 import { MyProps } from '../lib/utils';
-import { AutoscalingStack } from '../lib/autoscaling-stack';
 
 // Set properties for stacks
 let properties: MyProps = {
@@ -24,8 +21,4 @@ let properties: MyProps = {
 
 const app = new cdk.App();
 
-// Creation of several stacks
-const iam = new IamStack(app, 'iam-stack', properties);
-const s3 = new S3Stack(app, 's3-stack', properties);
-const comecommit = new CodeCommitStack(app, 'codecommit-stack', properties);
-const autoscalingGroups = new AutoscalingStack(app, 'autoscaling-stack', properties)
+new DevopsStack(app, 'devops-stack', properties);
