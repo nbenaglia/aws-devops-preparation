@@ -5,7 +5,10 @@ import * as ec2 from '@aws-cdk/aws-ec2';
 import * as iam from '@aws-cdk/aws-iam';
 import * as s3 from '@aws-cdk/aws-s3';
 import { MyProps } from './utils';
-import { Tags } from '@aws-cdk/core';
+import { Duration, Tags } from '@aws-cdk/core';
+import { Signals } from '@aws-cdk/aws-autoscaling';
+import { Duplex } from 'stream';
+import { AmazonLinuxEdition, AmazonLinuxGeneration } from '@aws-cdk/aws-ec2';
 
 export class DevopsStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props: MyProps) {
@@ -73,8 +76,33 @@ export class DevopsStack extends cdk.Stack {
     const ec2TestASG = new autoscaling.AutoScalingGroup(this, 'ec2-test', {
       autoScalingGroupName: 'test-asg',
       desiredCapacity: 2,
+      init: ec2.CloudFormationInit.fromConfigSets({
+        configSets: {
+          test: ['install', 'amazon_ssm_agent'],
+        },
+        configs: {
+          install: new ec2.InitConfig([
+            ec2.InitPackage.rpm('https://s3.region.amazonaws.com/amazon-ssm-region/latest/linux_amd64/amazon-ssm-agent.rpm'),
+          ]),
+          amazon_ssm_agent: new ec2.InitConfig([
+            ec2.InitService.enable('amazon-ssm-agent', {
+              enabled: true,
+              ensureRunning: true,
+            })
+          ])
+        }
+      }),
+      initOptions: {
+        configSets: ['test'],
+        embedFingerprint: false,
+      },
+      signals: Signals.waitForAll({ timeout: Duration.minutes(10) }),
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.BURSTABLE2, ec2.InstanceSize.MICRO),
-      machineImage: new ec2.AmazonLinuxImage(),
+      keyName: props.key,
+      machineImage: new ec2.AmazonLinuxImage({
+        generation: AmazonLinuxGeneration.AMAZON_LINUX_2,
+        edition: AmazonLinuxEdition.STANDARD
+      }),
       minCapacity: 1,
       maxCapacity: 3,
       role: ec2Role,
@@ -88,7 +116,11 @@ export class DevopsStack extends cdk.Stack {
       autoScalingGroupName: 'prod-asg',
       desiredCapacity: 1,
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.BURSTABLE2, ec2.InstanceSize.MICRO),
-      machineImage: new ec2.AmazonLinuxImage(),
+      keyName: props.key,
+      machineImage: new ec2.AmazonLinuxImage({
+        generation: AmazonLinuxGeneration.AMAZON_LINUX_2,
+        edition: AmazonLinuxEdition.STANDARD
+      }),
       minCapacity: 1,
       maxCapacity: 5,
       role: ec2Role,
