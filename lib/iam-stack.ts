@@ -1,8 +1,9 @@
 import * as cdk from '@aws-cdk/core';
 import * as iam from '@aws-cdk/aws-iam';
+import { MyProps } from './utils';
 
 export class IamStack extends cdk.Stack {
-  constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: cdk.Construct, id: string, props: MyProps) {
     super(scope, id, props);
 
     // EC2
@@ -11,8 +12,8 @@ export class IamStack extends cdk.Stack {
     });
 
     ec2Role.addToPolicy(new iam.PolicyStatement({
-      resources: ['*'],
-      actions: ['lambda:InvokeFunction'],
+      resources: [`arn:aws:s3:::${props.bucketName}/*`],
+      actions: ['s3:GetObject', 's3:PutObject'],
     }));
 
     // CODEDEPLOY
@@ -21,8 +22,8 @@ export class IamStack extends cdk.Stack {
     });
 
     codedeployRole.addToPolicy(new iam.PolicyStatement({
-      resources: ['*'],
-      actions: ['lambda:InvokeFunction'],
+      resources: [`arn:aws:s3:::${props.bucketName}/*`],
+      actions: ['s3:PutObject'],
     }));
   }
 }
