@@ -192,5 +192,14 @@ export class DevopsStack extends cdk.Stack {
     });
     Tags.of(ec2ProdASG).add('Name', 'ec2-prod');
     Tags.of(ec2ProdASG).add('Environment', 'prod');
+    
+    
+    // CODEDEPLOY PROJECT
+
+
+
+    // CODEPIPELINE PROJECT
+
   }
+
 }
