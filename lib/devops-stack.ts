@@ -1,18 +1,25 @@
 import * as autoscaling from '@aws-cdk/aws-autoscaling';
 import * as cdk from '@aws-cdk/core';
+import * as logs from '@aws-cdk/aws-logs';
+import * as codebuild from '@aws-cdk/aws-codebuild';
 import * as codecommit from '@aws-cdk/aws-codecommit';
 import * as ec2 from '@aws-cdk/aws-ec2';
 import * as iam from '@aws-cdk/aws-iam';
 import * as s3 from '@aws-cdk/aws-s3';
 import { MyProps } from './utils';
-import { Duration, Tags } from '@aws-cdk/core';
+import { Duration, RemovalPolicy, Tags } from '@aws-cdk/core';
 import { Signals } from '@aws-cdk/aws-autoscaling';
-import { Duplex } from 'stream';
-import { AmazonLinuxEdition, AmazonLinuxGeneration } from '@aws-cdk/aws-ec2';
+import { AmazonLinuxEdition, AmazonLinuxGeneration, MachineImage } from '@aws-cdk/aws-ec2';
+import { ComputeType, LinuxBuildImage } from '@aws-cdk/aws-codebuild';
+import { RetentionDays } from '@aws-cdk/aws-logs';
 
 export class DevopsStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props: MyProps) {
     super(scope, id, props);
+
+    ////////////////////
+    //    ROLES       //
+    ////////////////////
 
     // EC2
     const ec2Role = new iam.Role(this, 'ec2-role', {
@@ -25,6 +32,32 @@ export class DevopsStack extends cdk.Stack {
       actions: ['s3:GetObject', 's3:PutObject'],
     }));
 
+    // CODEBUILD ROLE
+    const codebuildRole = new iam.Role(this, 'codebuild-role', {
+      roleName: 'codebuildRole',
+      assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
+    });
+
+    codebuildRole.addToPolicy(new iam.PolicyStatement({
+      resources: [`arn:aws:s3:::${props.bucketName}/*`],
+      actions: ['s3:GetObject', 's3:PutObject'],
+    }));
+
+    // CODEDEPLOY ROLE
+    const codedeployRole = new iam.Role(this, 'codedeploy-role', {
+      roleName: 'codedeployRole',
+      assumedBy: new iam.ServicePrincipal('codedeploy.amazonaws.com'),
+    });
+
+    codedeployRole.addToPolicy(new iam.PolicyStatement({
+      resources: [`arn:aws:s3:::${props.bucketName}/*`],
+      actions: ['s3:GetObject'],
+    }));
+
+
+    ////////////////////////////
+    //    SECURITY GROUPS     //
+    ////////////////////////////
     let ec2SecurityGroup = new ec2.SecurityGroup(this, 'ec2-sg', {
       allowAllOutbound: true,
       securityGroupName: "ec2-sg",
@@ -51,16 +84,9 @@ export class DevopsStack extends cdk.Stack {
         toPort: 80
       }));
 
-    // CODEDEPLOY
-    const codedeployRole = new iam.Role(this, 'codedeploy-role', {
-      roleName: 'codedeployRole',
-      assumedBy: new iam.ServicePrincipal('codedeploy.amazonaws.com'),
-    });
-
-    codedeployRole.addToPolicy(new iam.PolicyStatement({
-      resources: [`arn:aws:s3:::${props.bucketName}/*`],
-      actions: ['s3:PutObject'],
-    }));
+    //////////////////////
+    //    RESOURCES     //
+    //////////////////////    
 
     // S3 BUCKET
     const bucket = new s3.Bucket(this, 'nbenaglia-bucket', {
@@ -76,6 +102,39 @@ export class DevopsStack extends cdk.Stack {
       description: 'First repository with CDK codecommit.'
     });
 
+    // CODEBUILD PROJECT
+    new codebuild.Project(this, 'MyFirstCodeCommitProject', {
+      artifacts: codebuild.Artifacts.s3({
+        bucket,
+        name: 'myArtifact.zip',
+        includeBuildId: true,
+        packageZip: true,
+        path: 'mycodebuild',
+      }),
+      description: 'This is my first codebuild project',
+      environment: {
+        buildImage: LinuxBuildImage.AMAZON_LINUX_2_3,
+        computeType: ComputeType.SMALL,
+      },
+      projectName: 'myFirstCodeCommitProject',
+      role: codebuildRole,
+      source: codebuild.Source.codeCommit({
+        repository
+      }),
+      logging: {
+        cloudWatch: {
+          enabled: true,
+          prefix: 'myCodebuild',
+          logGroup: new logs.LogGroup(this, `codebuild-loggroup`, {
+            logGroupName: 'myCodebuild',
+            retention: RetentionDays.ONE_DAY,
+            removalPolicy: RemovalPolicy.DESTROY
+          }),
+        }
+      }
+    });
+
+    // AUTOSCALING GROUPS
     const ec2TestASG = new autoscaling.AutoScalingGroup(this, 'ec2-test', {
       autoScalingGroupName: 'test-asg',
       desiredCapacity: 2,
