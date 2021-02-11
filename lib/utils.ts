@@ -1,4 +1,3 @@
-import { Ec2HealthCheckOptions } from '@aws-cdk/aws-autoscaling';
 import * as cdk from '@aws-cdk/core';
 
 export interface MyProps extends cdk.StackProps {
@@ -10,4 +9,10 @@ export interface MyProps extends cdk.StackProps {
   securityGroupSourceCIDR: string
   subnetId: string
   vpcId: string
+}
+
+export interface AsgCapacity {
+  desiredCapacity: number
+  minCapacity: number
+  maxCapacity: number
 }

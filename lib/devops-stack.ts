@@ -6,7 +6,7 @@ import * as codecommit from '@aws-cdk/aws-codecommit';
 import * as ec2 from '@aws-cdk/aws-ec2';
 import * as iam from '@aws-cdk/aws-iam';
 import * as s3 from '@aws-cdk/aws-s3';
-import { MyProps } from './utils';
+import { AsgCapacity, MyProps } from './utils';
 import { Duration, RemovalPolicy, Tags } from '@aws-cdk/core';
 import { Signals } from '@aws-cdk/aws-autoscaling';
 import { AmazonLinuxEdition, AmazonLinuxGeneration, MachineImage } from '@aws-cdk/aws-ec2';
@@ -14,13 +14,39 @@ import { ComputeType, LinuxBuildImage } from '@aws-cdk/aws-codebuild';
 import { RetentionDays } from '@aws-cdk/aws-logs';
 
 export class DevopsStack extends cdk.Stack {
+  ec2Role: iam.Role
+  codebuildRole: iam.Role
+  codedeployRole: iam.Role
+  ec2SecurityGroup: ec2.SecurityGroup
+  bucket: s3.Bucket
+  repository: codecommit.Repository
+  props: MyProps
+
   constructor(scope: cdk.Construct, id: string, props: MyProps) {
     super(scope, id, props);
+    this.props = props
 
-    ////////////////////
-    //    ROLES       //
-    ////////////////////
+    this.createRoles()
+    this.createSecurityGroups()
+    this.createBucket()
+    this.createRepository()
+    this.createAutoscalingGroups('test', { desiredCapacity: 2, minCapacity: 1, maxCapacity: 3 })
+    this.createAutoscalingGroups('prod', { desiredCapacity: 1, minCapacity: 1, maxCapacity: 4 })
+    this.createCodebuild()
+    this.createCodedeploy()
+    this.createCodepipeline()
+  }
 
+  // CODECOMMIT REPOSITORY
+  createRepository() {
+    this.repository = new codecommit.Repository(this, `${this.props.repositoryName}-repository`, {
+      repositoryName: `${this.props.repositoryName}`,
+      description: 'First repository with CDK codecommit.'
+    });
+  }
+
+  // ROLES
+  createRoles() {
     // EC2
     const ec2Role = new iam.Role(this, 'ec2-role', {
       roleName: 'ec2Role',
@@ -28,7 +54,7 @@ export class DevopsStack extends cdk.Stack {
     });
 
     ec2Role.addToPolicy(new iam.PolicyStatement({
-      resources: [`arn:aws:s3:::${props.bucketName}/*`],
+      resources: [`arn:aws:s3:::${this.props.bucketName}/*`],
       actions: ['s3:GetObject', 's3:PutObject'],
     }));
 
@@ -39,7 +65,7 @@ export class DevopsStack extends cdk.Stack {
     });
 
     codebuildRole.addToPolicy(new iam.PolicyStatement({
-      resources: [`arn:aws:s3:::${props.bucketName}/*`],
+      resources: [`arn:aws:s3:::${this.props.bucketName}/*`],
       actions: ['s3:GetObject', 's3:PutObject'],
     }));
 
@@ -50,23 +76,33 @@ export class DevopsStack extends cdk.Stack {
     });
 
     codedeployRole.addToPolicy(new iam.PolicyStatement({
-      resources: [`arn:aws:s3:::${props.bucketName}/*`],
+      resources: [`arn:aws:s3:::${this.props.bucketName}/*`],
       actions: ['s3:GetObject'],
     }));
+  }
 
+  // S3 BUCKET
+  createBucket() {
+    this.bucket = new s3.Bucket(this, 'nbenaglia-bucket', {
+      autoDeleteObjects: true,
+      bucketName: this.props.bucketName,
+      encryption: s3.BucketEncryption.UNENCRYPTED,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      versioned: false
+    });
+  }
 
-    ////////////////////////////
-    //    SECURITY GROUPS     //
-    ////////////////////////////
-    let ec2SecurityGroup = new ec2.SecurityGroup(this, 'ec2-sg', {
+  // SECURITY GROUPS
+  createSecurityGroups() {
+    this.ec2SecurityGroup = new ec2.SecurityGroup(this, 'ec2-sg', {
       allowAllOutbound: true,
       securityGroupName: "ec2-sg",
-      vpc: ec2.Vpc.fromLookup(this, "my-sg-vpc", { vpcId: props.vpcId })
+      vpc: ec2.Vpc.fromLookup(this, "my-sg-vpc", { vpcId: this.props.vpcId })
     })
 
     // SG-SSH
-    ec2SecurityGroup.addIngressRule(
-      ec2.Peer.ipv4(props.securityGroupSourceCIDR),
+    this.ec2SecurityGroup.addIngressRule(
+      ec2.Peer.ipv4(this.props.securityGroupSourceCIDR),
       new ec2.Port({
         stringRepresentation: "SSH",
         protocol: ec2.Protocol.TCP,
@@ -75,38 +111,21 @@ export class DevopsStack extends cdk.Stack {
       }));
 
     // SG-HTTP
-    ec2SecurityGroup.addIngressRule(
-      ec2.Peer.ipv4(props.securityGroupSourceCIDR),
+    this.ec2SecurityGroup.addIngressRule(
+      ec2.Peer.ipv4(this.props.securityGroupSourceCIDR),
       new ec2.Port({
         stringRepresentation: "HTTP",
         protocol: ec2.Protocol.TCP,
         fromPort: 80,
         toPort: 80
       }));
+  }
 
-    //////////////////////
-    //    RESOURCES     //
-    //////////////////////    
-
-    // S3 BUCKET
-    const bucket = new s3.Bucket(this, 'nbenaglia-bucket', {
-      autoDeleteObjects: true,
-      bucketName: props.bucketName,
-      encryption: s3.BucketEncryption.UNENCRYPTED,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      versioned: false
-    });
-
-    // CODECOMMIT REPOSITORY
-    const repository = new codecommit.Repository(this, `${props.repositoryName}-repository`, {
-      repositoryName: `${props.repositoryName}`,
-      description: 'First repository with CDK codecommit.'
-    });
-
-    // CODEBUILD PROJECT
+  // CODEBUILD PROJECT
+  createCodebuild() {
     new codebuild.Project(this, 'MyFirstCodeCommitProject', {
       artifacts: codebuild.Artifacts.s3({
-        bucket,
+        bucket: this.bucket,
         name: 'myArtifact.zip',
         includeBuildId: true,
         packageZip: true,
@@ -118,9 +137,9 @@ export class DevopsStack extends cdk.Stack {
         computeType: ComputeType.SMALL,
       },
       projectName: 'myFirstCodeCommitProject',
-      role: codebuildRole,
+      role: this.codebuildRole,
       source: codebuild.Source.codeCommit({
-        repository
+        repository: this.repository
       }),
       logging: {
         cloudWatch: {
@@ -134,14 +153,16 @@ export class DevopsStack extends cdk.Stack {
         }
       }
     });
+  }
 
-    // AUTOSCALING GROUPS
-    const ec2TestASG = new autoscaling.AutoScalingGroup(this, 'ec2-test', {
-      autoScalingGroupName: 'test-asg',
-      desiredCapacity: 2,
+  // AUTOSCALING GROUPS
+  createAutoscalingGroups(environment: string, capacity: AsgCapacity) {
+    const ec2TestASG = new autoscaling.AutoScalingGroup(this, `ec2-${environment}`, {
+      autoScalingGroupName: `asg-${environment}`,
+      desiredCapacity: capacity.desiredCapacity,
       init: ec2.CloudFormationInit.fromConfigSets({
         configSets: {
-          test: ['install', 'amazon_ssm_agent'],
+          default: ['install', 'amazon_ssm_agent'],
         },
         configs: {
           install: new ec2.InitConfig([
@@ -156,50 +177,34 @@ export class DevopsStack extends cdk.Stack {
         }
       }),
       initOptions: {
-        configSets: ['test'],
+        configSets: ['default'],
         embedFingerprint: false,
       },
       signals: Signals.waitForAll({ timeout: Duration.minutes(10) }),
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.BURSTABLE2, ec2.InstanceSize.MICRO),
-      keyName: props.key,
+      keyName: this.props.key,
       machineImage: new ec2.AmazonLinuxImage({
         generation: AmazonLinuxGeneration.AMAZON_LINUX_2,
         edition: AmazonLinuxEdition.STANDARD
       }),
-      minCapacity: 1,
-      maxCapacity: 3,
-      role: ec2Role,
-      securityGroup: ec2SecurityGroup,
-      vpc: ec2.Vpc.fromLookup(this, "my-autoscaling-vpc", { vpcId: props.vpcId }),
+      minCapacity: capacity.minCapacity,
+      maxCapacity: capacity.maxCapacity,
+      role: this.ec2Role,
+      securityGroup: this.ec2SecurityGroup,
+      vpc: ec2.Vpc.fromLookup(this, `autoscaling-vpc-${environment}`, { vpcId: this.props.vpcId }),
     });
-    Tags.of(ec2TestASG).add('Name', 'ec2-test');
-    Tags.of(ec2TestASG).add('Environment', 'test');
+    Tags.of(ec2TestASG).add('Name', `test-${environment}`);
+    Tags.of(ec2TestASG).add('Environment', `${environment}`);
+  }
 
-    const ec2ProdASG = new autoscaling.AutoScalingGroup(this, 'ec2-prod', {
-      autoScalingGroupName: 'prod-asg',
-      desiredCapacity: 1,
-      instanceType: ec2.InstanceType.of(ec2.InstanceClass.BURSTABLE2, ec2.InstanceSize.MICRO),
-      keyName: props.key,
-      machineImage: new ec2.AmazonLinuxImage({
-        generation: AmazonLinuxGeneration.AMAZON_LINUX_2,
-        edition: AmazonLinuxEdition.STANDARD
-      }),
-      minCapacity: 1,
-      maxCapacity: 5,
-      role: ec2Role,
-      securityGroup: ec2SecurityGroup,
-      vpc: ec2.Vpc.fromLookup(this, "my-vpc", { vpcId: props.vpcId }),
-    });
-    Tags.of(ec2ProdASG).add('Name', 'ec2-prod');
-    Tags.of(ec2ProdASG).add('Environment', 'prod');
-    
-    
-    // CODEDEPLOY PROJECT
-
-
-
-    // CODEPIPELINE PROJECT
+  // CODEDEPLOY PROJECT
+  createCodedeploy() {
 
   }
 
+
+  // CODEPIPELINE PROJECT
+  createCodepipeline() {
+
+  }
 }
