@@ -90,6 +90,7 @@ export class DevopsStack extends cdk.Stack {
 
     // S3 BUCKET
     const bucket = new s3.Bucket(this, 'nbenaglia-bucket', {
+      autoDeleteObjects: true,
       bucketName: props.bucketName,
       encryption: s3.BucketEncryption.UNENCRYPTED,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
