@@ -94,7 +94,7 @@ export class DevopsStack extends cdk.Stack {
       bucketName: props.bucketName,
       encryption: s3.BucketEncryption.UNENCRYPTED,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      versioned: true
+      versioned: false
     });
 
     // CODECOMMIT REPOSITORY
