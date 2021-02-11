@@ -29,7 +29,7 @@ export class DevopsStack extends cdk.Stack {
     this.createRoles()
     this.createSecurityGroups()
     this.createBucket()
-    this.createRepository()
+    this.createCodecommitRepository()
     this.createAutoscalingGroups('test', { desiredCapacity: 2, minCapacity: 1, maxCapacity: 3 })
     this.createAutoscalingGroups('prod', { desiredCapacity: 1, minCapacity: 1, maxCapacity: 4 })
     this.createCodebuild()
@@ -38,7 +38,7 @@ export class DevopsStack extends cdk.Stack {
   }
 
   // CODECOMMIT REPOSITORY
-  createRepository() {
+  createCodecommitRepository() {
     this.repository = new codecommit.Repository(this, `${this.props.repositoryName}-repository`, {
       repositoryName: `${this.props.repositoryName}`,
       description: 'First repository with CDK codecommit.'
