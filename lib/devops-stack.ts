@@ -16,6 +16,7 @@ export class DevopsStack extends cdk.Stack {
 
     // EC2
     const ec2Role = new iam.Role(this, 'ec2-role', {
+      roleName: 'ec2Role',
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
     });
 
@@ -52,6 +53,7 @@ export class DevopsStack extends cdk.Stack {
 
     // CODEDEPLOY
     const codedeployRole = new iam.Role(this, 'codedeploy-role', {
+      roleName: 'codedeployRole',
       assumedBy: new iam.ServicePrincipal('codedeploy.amazonaws.com'),
     });
 
