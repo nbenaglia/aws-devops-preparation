@@ -1,12 +1,14 @@
 import * as autoscaling from '@aws-cdk/aws-autoscaling';
 import * as cdk from '@aws-cdk/core';
 import * as logs from '@aws-cdk/aws-logs';
+import * as cloudwatch from '@aws-cdk/aws-cloudwatch';
 import * as codebuild from '@aws-cdk/aws-codebuild';
 import * as codecommit from '@aws-cdk/aws-codecommit';
+import * as codedeploy from '@aws-cdk/aws-codedeploy';
 import * as ec2 from '@aws-cdk/aws-ec2';
 import * as iam from '@aws-cdk/aws-iam';
 import * as s3 from '@aws-cdk/aws-s3';
-import { AsgCapacity, MyProps } from './utils';
+import { AsgCapacity, CicdProps } from './utils';
 import { Duration, RemovalPolicy, Tags } from '@aws-cdk/core';
 import { Signals } from '@aws-cdk/aws-autoscaling';
 import { AmazonLinuxEdition, AmazonLinuxGeneration, MachineImage } from '@aws-cdk/aws-ec2';
@@ -20,9 +22,11 @@ export class CicdStack extends cdk.Stack {
   ec2SecurityGroup: ec2.SecurityGroup
   bucket: s3.Bucket
   repository: codecommit.Repository
-  props: MyProps
+  props: CicdProps
+  prodAsg: autoscaling.AutoScalingGroup
+  testAsg: autoscaling.AutoScalingGroup
 
-  constructor(scope: cdk.Construct, id: string, props: MyProps) {
+  constructor(scope: cdk.Construct, id: string, props: CicdProps) {
     super(scope, id, props);
     this.props = props
 
@@ -30,11 +34,12 @@ export class CicdStack extends cdk.Stack {
     this.createSecurityGroups()
     this.createBucket()
     this.createCodecommitRepository()
-    this.createAutoscalingGroups('test', { desiredCapacity: 2, minCapacity: 1, maxCapacity: 3 })
-    this.createAutoscalingGroups('prod', { desiredCapacity: 1, minCapacity: 1, maxCapacity: 4 })
+    this.testAsg = this.createAutoscalingGroups('test', { desiredCapacity: 2, minCapacity: 1, maxCapacity: 3 })
+    this.prodAsg = this.createAutoscalingGroups('prod', { desiredCapacity: 1, minCapacity: 1, maxCapacity: 4 })
     this.createCodebuild()
-    this.createCodedeploy()
-    this.createCodepipeline()
+    this.createCodedeploy([this.testAsg], 'test')
+    this.createCodedeploy([this.prodAsg], 'prod')
+    // this.createCodepipeline()
   }
 
   // CODECOMMIT REPOSITORY
@@ -110,7 +115,7 @@ export class CicdStack extends cdk.Stack {
         toPort: 22
       }));
 
-    // SG-HTTP
+    // SG-HTTPconst
     this.ec2SecurityGroup.addIngressRule(
       ec2.Peer.ipv4(this.props.securityGroupSourceCIDR),
       new ec2.Port({
@@ -156,8 +161,8 @@ export class CicdStack extends cdk.Stack {
   }
 
   // AUTOSCALING GROUPS
-  createAutoscalingGroups(environment: string, capacity: AsgCapacity) {
-    const ec2TestASG = new autoscaling.AutoScalingGroup(this, `ec2-${environment}`, {
+  createAutoscalingGroups(environment: string, capacity: AsgCapacity): autoscaling.AutoScalingGroup {
+    let asg = new autoscaling.AutoScalingGroup(this, `ec2-${environment}`, {
       autoScalingGroupName: `asg-${environment}`,
       desiredCapacity: capacity.desiredCapacity,
       init: ec2.CloudFormationInit.fromConfigSets({
@@ -193,12 +198,47 @@ export class CicdStack extends cdk.Stack {
       securityGroup: this.ec2SecurityGroup,
       vpc: ec2.Vpc.fromLookup(this, `autoscaling-vpc-${environment}`, { vpcId: this.props.vpcId }),
     });
-    Tags.of(ec2TestASG).add('Name', `test-${environment}`);
-    Tags.of(ec2TestASG).add('Environment', `${environment}`);
+    Tags.of(asg).add('Name', `asg-${environment}`);
+    Tags.of(asg).add('Environment', `${environment}`);
+
+    return asg
   }
 
   // CODEDEPLOY PROJECT
-  createCodedeploy() {
+  createCodedeploy(autoScalingGroups: autoscaling.AutoScalingGroup[], environment: string) {
+    const application = new codedeploy.ServerApplication(this, 'codedeploy-application', {
+      applicationName: 'MyApplication',
+    });
+
+    const testDeploymentGroup = new codedeploy.ServerDeploymentGroup(this, `${environment}-deployment-group`, {
+      application,
+      autoScalingGroups: autoScalingGroups,
+      deploymentGroupName: `${environment}DeploymentGroup`,
+      deploymentConfig: codedeploy.ServerDeploymentConfig.ALL_AT_ONCE,
+      installAgent: true,
+      // adds EC2 instances matching tags
+      ec2InstanceTags: new codedeploy.InstanceTagSet({ 'Environment': [`${environment}`] },
+      ),
+      // CloudWatch alarms
+      // alarms: [
+      //   new cloudwatch.Alarm(this, 'error-alarm', {
+      //     comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      //     threshold: 1,
+      //     evaluationPeriods: 1,
+      //     metric: alias.metricErrors()
+      //   })
+      // ],
+      // whether to ignore failure to fetch the status of alarms from CloudWatch
+      // default: false
+      ignorePollAlarmsFailure: false,
+      // auto-rollback configuration
+      autoRollback: {
+        failedDeployment: true,
+        stoppedDeployment: true,
+        deploymentInAlarm: false,
+      },
+      role: this.codedeployRole
+    });
 
   }
 

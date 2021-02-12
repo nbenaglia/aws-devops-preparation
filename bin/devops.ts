@@ -2,10 +2,10 @@
 import 'source-map-support/register';
 import * as cdk from '@aws-cdk/core';
 import { CicdStack } from '../lib/cicd-stack';
-import { MyProps } from '../lib/utils';
+import { CicdProps } from '../lib/utils';
 
 // Set properties for stacks
-let properties: MyProps = {
+let properties: CicdProps = {
   availabilityZone: 'eu-west-1a',
   bucketName: 'nbenaglia',
   env: {

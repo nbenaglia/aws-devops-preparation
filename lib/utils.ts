@@ -1,6 +1,6 @@
 import * as cdk from '@aws-cdk/core';
 
-export interface MyProps extends cdk.StackProps {
+export interface CicdProps extends cdk.StackProps {
   availabilityZone: string
   bucketName: string
   env: cdk.Environment
