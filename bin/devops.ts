@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import 'source-map-support/register';
 import * as cdk from '@aws-cdk/core';
-import { DevopsStack } from '../lib/devops-stack';
+import { CicdStack } from '../lib/cicd-stack';
 import { MyProps } from '../lib/utils';
 
 // Set properties for stacks
@@ -21,4 +21,4 @@ let properties: MyProps = {
 
 const app = new cdk.App();
 
-new DevopsStack(app, 'devops-stack', properties);
+new CicdStack(app, 'cicd-stack', properties);

@@ -13,7 +13,7 @@ import { AmazonLinuxEdition, AmazonLinuxGeneration, MachineImage } from '@aws-cd
 import { ComputeType, LinuxBuildImage } from '@aws-cdk/aws-codebuild';
 import { RetentionDays } from '@aws-cdk/aws-logs';
 
-export class DevopsStack extends cdk.Stack {
+export class CicdStack extends cdk.Stack {
   ec2Role: iam.Role
   codebuildRole: iam.Role
   codedeployRole: iam.Role
