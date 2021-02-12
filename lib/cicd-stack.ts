@@ -19,6 +19,7 @@ export class CicdStack extends cdk.Stack {
   ec2Role: iam.Role
   codebuildRole: iam.Role
   codedeployRole: iam.Role
+  codedeployApplication: codedeploy.ServerApplication
   ec2SecurityGroup: ec2.SecurityGroup
   bucket: s3.Bucket
   repository: codecommit.Repository
@@ -34,11 +35,15 @@ export class CicdStack extends cdk.Stack {
     this.createSecurityGroups()
     this.createBucket()
     this.createCodecommitRepository()
+    
+    this.createCodebuild()
+
     this.testAsg = this.createAutoscalingGroups('test', { desiredCapacity: 2, minCapacity: 1, maxCapacity: 3 })
     this.prodAsg = this.createAutoscalingGroups('prod', { desiredCapacity: 1, minCapacity: 1, maxCapacity: 4 })
-    this.createCodebuild()
-    this.createCodedeploy([this.testAsg], 'test')
-    this.createCodedeploy([this.prodAsg], 'prod')
+    this.createCodedeployApplication()
+    this.createCodedeployDeploymentGroup([this.testAsg], 'test')
+    this.createCodedeployDeploymentGroup([this.prodAsg], 'prod')
+
     // this.createCodepipeline()
   }
 
@@ -205,13 +210,15 @@ export class CicdStack extends cdk.Stack {
   }
 
   // CODEDEPLOY PROJECT
-  createCodedeploy(autoScalingGroups: autoscaling.AutoScalingGroup[], environment: string) {
-    const application = new codedeploy.ServerApplication(this, 'codedeploy-application', {
+  createCodedeployApplication(){
+    this.codedeployApplication = new codedeploy.ServerApplication(this, 'codedeploy-application', {
       applicationName: 'MyApplication',
     });
-
+  }
+  
+  createCodedeployDeploymentGroup(autoScalingGroups: autoscaling.AutoScalingGroup[], environment: string) {
     const testDeploymentGroup = new codedeploy.ServerDeploymentGroup(this, `${environment}-deployment-group`, {
-      application,
+      application: this.codedeployApplication,
       autoScalingGroups: autoScalingGroups,
       deploymentGroupName: `${environment}DeploymentGroup`,
       deploymentConfig: codedeploy.ServerDeploymentConfig.ALL_AT_ONCE,
