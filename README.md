@@ -1,6 +1,6 @@
 # aws-devops-preparation
 
-This repo contains some AWS Stack to have an environment to prepare and make exercise for the AWS DevOps Professional Certification exam.
+This repo contains some AWS stacks to prepare an environment and make exercise for the AWS DevOps Professional Certification exam.
 
 ## CDK
 

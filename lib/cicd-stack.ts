@@ -11,12 +11,15 @@ import * as s3 from '@aws-cdk/aws-s3';
 import { AsgCapacity, CicdProps } from './utils';
 import { Duration, RemovalPolicy, Tags } from '@aws-cdk/core';
 import { Signals } from '@aws-cdk/aws-autoscaling';
-import { AmazonLinuxEdition, AmazonLinuxGeneration, MachineImage } from '@aws-cdk/aws-ec2';
+import { AmazonLinuxEdition, AmazonLinuxGeneration } from '@aws-cdk/aws-ec2';
 import { ComputeType, LinuxBuildImage } from '@aws-cdk/aws-codebuild';
 import { RetentionDays } from '@aws-cdk/aws-logs';
+import { MinimumHealthyHosts } from '@aws-cdk/aws-codedeploy';
+import { getS3Policy, getSsmPolicy } from './inline-policies';
 
 export class CicdStack extends cdk.Stack {
   ec2Role: iam.Role
+  ec2InstanceProfile: iam.CfnInstanceProfile
   codebuildRole: iam.Role
   codedeployRole: iam.Role
   codedeployApplication: codedeploy.ServerApplication
@@ -35,14 +38,16 @@ export class CicdStack extends cdk.Stack {
     this.createSecurityGroups()
     this.createBucket()
     this.createCodecommitRepository()
-    
+
     this.createCodebuild()
 
+    // codedeploy
     this.testAsg = this.createAutoscalingGroups('test', { desiredCapacity: 2, minCapacity: 1, maxCapacity: 3 })
     this.prodAsg = this.createAutoscalingGroups('prod', { desiredCapacity: 1, minCapacity: 1, maxCapacity: 4 })
     this.createCodedeployApplication()
     this.createCodedeployDeploymentGroup([this.testAsg], 'test')
     this.createCodedeployDeploymentGroup([this.prodAsg], 'prod')
+    // this.createCodedeployDeploymentConfig()
 
     // this.createCodepipeline()
   }
@@ -58,43 +63,50 @@ export class CicdStack extends cdk.Stack {
   // ROLES
   createRoles() {
     // EC2
-    const ec2Role = new iam.Role(this, 'ec2-role', {
+    this.ec2Role = new iam.Role(this, 'ec2-role', {
       roleName: 'ec2Role',
-      assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
+      assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com')
     });
-
-    ec2Role.addToPolicy(new iam.PolicyStatement({
-      resources: [`arn:aws:s3:::${this.props.bucketName}/*`],
-      actions: ['s3:GetObject', 's3:PutObject'],
-    }));
+    this.ec2Role.attachInlinePolicy(getS3Policy(this, 's3-ec2', this.props));
+    this.ec2Role.attachInlinePolicy(getSsmPolicy(this, 'ssm-ec2', this.props));
 
     // CODEBUILD ROLE
-    const codebuildRole = new iam.Role(this, 'codebuild-role', {
+    this.codebuildRole = new iam.Role(this, 'codebuild-role', {
       roleName: 'codebuildRole',
       assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
     });
-
-    codebuildRole.addToPolicy(new iam.PolicyStatement({
-      resources: [`arn:aws:s3:::${this.props.bucketName}/*`],
-      actions: ['s3:GetObject', 's3:PutObject'],
-    }));
+    this.codebuildRole.attachInlinePolicy(getSsmPolicy(this, 'ssm-codebuildRole', this.props));
+    this.codebuildRole.attachInlinePolicy(getS3Policy(this, 's3-codebuildRole', this.props));
 
     // CODEDEPLOY ROLE
-    const codedeployRole = new iam.Role(this, 'codedeploy-role', {
+    this.codedeployRole = new iam.Role(this, 'codedeploy-role', {
       roleName: 'codedeployRole',
       assumedBy: new iam.ServicePrincipal('codedeploy.amazonaws.com'),
     });
-
-    codedeployRole.addToPolicy(new iam.PolicyStatement({
+    this.codedeployRole.attachInlinePolicy(getSsmPolicy(this, 'ssm-codedeployRole', this.props));
+    this.codedeployRole.addToPolicy(new iam.PolicyStatement({
       resources: [`arn:aws:s3:::${this.props.bucketName}/*`],
       actions: ['s3:GetObject'],
+    }));
+    this.codedeployRole.addToPolicy(new iam.PolicyStatement({
+      resources: ['*'],
+      actions: [
+        'autoscaling:Describe*',
+        'autoscaling:CompleteLifecycleAction'
+      ],
     }));
   }
 
   // S3 BUCKET
   createBucket() {
-    this.bucket = new s3.Bucket(this, 'nbenaglia-bucket', {
+    this.bucket = new s3.Bucket(this, `${this.props.bucketName}-bucket`, {
       autoDeleteObjects: true,
+      blockPublicAccess: {
+        blockPublicAcls: true,
+        blockPublicPolicy: true,
+        ignorePublicAcls: true,
+        restrictPublicBuckets: true
+      },
       bucketName: this.props.bucketName,
       encryption: s3.BucketEncryption.UNENCRYPTED,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -120,7 +132,7 @@ export class CicdStack extends cdk.Stack {
         toPort: 22
       }));
 
-    // SG-HTTPconst
+    // SG-HTTP
     this.ec2SecurityGroup.addIngressRule(
       ec2.Peer.ipv4(this.props.securityGroupSourceCIDR),
       new ec2.Port({
@@ -210,22 +222,20 @@ export class CicdStack extends cdk.Stack {
   }
 
   // CODEDEPLOY PROJECT
-  createCodedeployApplication(){
+  createCodedeployApplication() {
     this.codedeployApplication = new codedeploy.ServerApplication(this, 'codedeploy-application', {
       applicationName: 'MyApplication',
     });
   }
-  
+
   createCodedeployDeploymentGroup(autoScalingGroups: autoscaling.AutoScalingGroup[], environment: string) {
-    const testDeploymentGroup = new codedeploy.ServerDeploymentGroup(this, `${environment}-deployment-group`, {
+    const deploymentGroup = new codedeploy.ServerDeploymentGroup(this, `${environment}-deployment-group`, {
       application: this.codedeployApplication,
       autoScalingGroups: autoScalingGroups,
       deploymentGroupName: `${environment}DeploymentGroup`,
       deploymentConfig: codedeploy.ServerDeploymentConfig.ALL_AT_ONCE,
       installAgent: true,
-      // adds EC2 instances matching tags
-      ec2InstanceTags: new codedeploy.InstanceTagSet({ 'Environment': [`${environment}`] },
-      ),
+      ec2InstanceTags: new codedeploy.InstanceTagSet({ 'Environment': [`${environment}`] }),
       // CloudWatch alarms
       // alarms: [
       //   new cloudwatch.Alarm(this, 'error-alarm', {
@@ -238,17 +248,25 @@ export class CicdStack extends cdk.Stack {
       // whether to ignore failure to fetch the status of alarms from CloudWatch
       // default: false
       ignorePollAlarmsFailure: false,
-      // auto-rollback configuration
+      // auto-rollback configurationTagging your instances enables you to see instance cost allocation b
+      role: this.codedeployRole,
       autoRollback: {
-        failedDeployment: true,
-        stoppedDeployment: true,
-        deploymentInAlarm: false,
+        failedDeployment: true, // default: true
+        stoppedDeployment: true, // default: false
+        deploymentInAlarm: false, // default: true if you provided any alarms, false otherwise
       },
-      role: this.codedeployRole
     });
-
   }
 
+  // Add a deplomentConfig to the three canonical ones: ONE_AT_A_TIME, HALF_AT_A_TIME, ALL_AT_ONCE
+  createCodedeployDeploymentConfig() {
+    const deploymentConfig = new codedeploy.ServerDeploymentConfig(this, 'DeploymentConfiguration', {
+      deploymentConfigName: 'MyDeploymentConfiguration', // optional property
+      // one of these is required, but both cannot be specified at the same time
+      minimumHealthyHosts: MinimumHealthyHosts.count(1),
+      // minHealthyHostPercentage: 75,
+    });
+  }
 
   // CODEPIPELINE PROJECT
   createCodepipeline() {
