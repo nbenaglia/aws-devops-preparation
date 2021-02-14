@@ -5,6 +5,8 @@ import * as cloudwatch from '@aws-cdk/aws-cloudwatch';
 import * as codebuild from '@aws-cdk/aws-codebuild';
 import * as codecommit from '@aws-cdk/aws-codecommit';
 import * as codedeploy from '@aws-cdk/aws-codedeploy';
+import * as codepipeline from '@aws-cdk/aws-codepipeline';
+import * as codepipeline_actions from '@aws-cdk/aws-codepipeline-actions';
 import * as ec2 from '@aws-cdk/aws-ec2';
 import * as iam from '@aws-cdk/aws-iam';
 import * as s3 from '@aws-cdk/aws-s3';
@@ -15,9 +17,10 @@ import { AmazonLinuxEdition, AmazonLinuxGeneration } from '@aws-cdk/aws-ec2';
 import { ComputeType, LinuxBuildImage } from '@aws-cdk/aws-codebuild';
 import { RetentionDays } from '@aws-cdk/aws-logs';
 import { MinimumHealthyHosts } from '@aws-cdk/aws-codedeploy';
-import { getS3Policy, getSsmPolicy } from './inline-policies';
+import { getCodedeployPolicy, getS3Policy, getSsmPolicy } from './inline-policies';
 
 export class CicdStack extends cdk.Stack {
+  artifactName: string = 'myArtifact'
   ec2Role: iam.Role
   ec2InstanceProfile: iam.CfnInstanceProfile
   codebuildRole: iam.Role
@@ -47,7 +50,7 @@ export class CicdStack extends cdk.Stack {
     this.createCodedeployApplication()
     this.createCodedeployDeploymentGroup([this.testAsg], 'test')
     this.createCodedeployDeploymentGroup([this.prodAsg], 'prod')
-    // this.createCodedeployDeploymentConfig()
+    this.createCodedeployDeploymentConfig()
 
     // this.createCodepipeline()
   }
@@ -83,18 +86,7 @@ export class CicdStack extends cdk.Stack {
       roleName: 'codedeployRole',
       assumedBy: new iam.ServicePrincipal('codedeploy.amazonaws.com'),
     });
-    this.codedeployRole.attachInlinePolicy(getSsmPolicy(this, 'ssm-codedeployRole', this.props));
-    this.codedeployRole.addToPolicy(new iam.PolicyStatement({
-      resources: [`arn:aws:s3:::${this.props.bucketName}/*`],
-      actions: ['s3:GetObject'],
-    }));
-    this.codedeployRole.addToPolicy(new iam.PolicyStatement({
-      resources: ['*'],
-      actions: [
-        'autoscaling:Describe*',
-        'autoscaling:CompleteLifecycleAction'
-      ],
-    }));
+    this.codedeployRole.attachInlinePolicy(getCodedeployPolicy(this, 'codedeploy', this.props));
   }
 
   // S3 BUCKET
@@ -148,7 +140,7 @@ export class CicdStack extends cdk.Stack {
     new codebuild.Project(this, 'MyFirstCodeCommitProject', {
       artifacts: codebuild.Artifacts.s3({
         bucket: this.bucket,
-        name: 'myArtifact.zip',
+        name: this.artifactName,
         includeBuildId: true,
         packageZip: true,
         path: 'mycodebuild',
@@ -270,6 +262,34 @@ export class CicdStack extends cdk.Stack {
 
   // CODEPIPELINE PROJECT
   createCodepipeline() {
+    const pipeline = new codepipeline.Pipeline(this, 'first-pipeline', {
+      pipelineName: 'MyPipeline',
+      crossAccountKeys: false,  // if true, KMS Customer Master Keys are created which have a cost of $1/month
+      // stages: [    // or use .addStage method
+      //   {
+      //     stageName: 'Source',
+      //     actions: [
+      //       // see below...
+      //     ],
+      //   },
+      // ],
+    });
 
+    const sourceOutput = new codepipeline.Artifact(this.artifactName);
+    const sourceAction = new codepipeline_actions.CodeCommitSourceAction({
+      actionName: 'CodeCommit',
+      repository: this.repository,
+      output: sourceOutput,
+    });
+    pipeline.addStage({
+      stageName: 'Source',
+      actions: [sourceAction],
+      // placement: {
+      //   // note: you can only specify one of the below properties
+      //   rightBefore: anotherStage,
+      //   justAfter: anotherStage
+      // }
+    });
+  
   }
 }

@@ -3,13 +3,6 @@ import 'source-map-support/register';
 import * as cdk from '@aws-cdk/core';
 import { CicdStack } from '../lib/cicd-stack';
 import { CicdProps } from '../lib/utils';
-import * as autoscaling from '@aws-cdk/aws-autoscaling';
-import * as ec2 from '@aws-cdk/aws-ec2';
-import * as iam from '@aws-cdk/aws-iam';
-import * as s3 from '@aws-cdk/aws-s3';
-import { Signals } from '@aws-cdk/aws-autoscaling';
-import { Duration } from '@aws-cdk/core';
-import { AmazonLinuxEdition, AmazonLinuxGeneration } from '@aws-cdk/aws-ec2';
 
 // Set properties for stacks
 let properties: CicdProps = {
