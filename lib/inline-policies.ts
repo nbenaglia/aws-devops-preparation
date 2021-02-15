@@ -99,3 +99,19 @@ export function getCodedeployPolicy(scope: Construct, id: string, props: StackPr
   );
   return policy;
 }
+
+export function getCodepipelinePolicy(scope: Construct, id: string, props: StackProps): iam.Policy {
+  let policy = new iam.Policy(scope, id, { policyName: id });
+  policy.addStatements(
+    new iam.PolicyStatement({
+      actions: [
+        'codepipeline:*',
+        's3:*',
+        'ssm:*',
+      ],
+      resources: ['*']
+    }
+    )
+  );
+  return policy;
+}

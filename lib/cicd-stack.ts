@@ -17,7 +17,7 @@ import { AmazonLinuxEdition, AmazonLinuxGeneration } from '@aws-cdk/aws-ec2';
 import { ComputeType, LinuxBuildImage } from '@aws-cdk/aws-codebuild';
 import { RetentionDays } from '@aws-cdk/aws-logs';
 import { MinimumHealthyHosts } from '@aws-cdk/aws-codedeploy';
-import { getCodedeployPolicy, getS3Policy, getSsmPolicy } from './inline-policies';
+import { getCodedeployPolicy, getCodepipelinePolicy, getS3Policy, getSsmPolicy } from './inline-policies';
 
 export class CicdStack extends cdk.Stack {
   artifactName: string = 'myArtifact'
@@ -25,6 +25,7 @@ export class CicdStack extends cdk.Stack {
   ec2InstanceProfile: iam.CfnInstanceProfile
   codebuildRole: iam.Role
   codedeployRole: iam.Role
+  codepipelineRole: iam.Role
   codedeployApplication: codedeploy.ServerApplication
   ec2SecurityGroup: ec2.SecurityGroup
   bucket: s3.Bucket
@@ -32,6 +33,8 @@ export class CicdStack extends cdk.Stack {
   props: CicdProps
   prodAsg: autoscaling.AutoScalingGroup
   testAsg: autoscaling.AutoScalingGroup
+  prodDeploymentGroup: codedeploy.ServerDeploymentGroup
+  testDeploymentGroup: codedeploy.ServerDeploymentGroup
 
   constructor(scope: cdk.Construct, id: string, props: CicdProps) {
     super(scope, id, props);
@@ -42,17 +45,19 @@ export class CicdStack extends cdk.Stack {
     this.createBucket()
     this.createCodecommitRepository()
 
+    // codebuild
     this.createCodebuild()
 
     // codedeploy
     this.testAsg = this.createAutoscalingGroups('test', { desiredCapacity: 2, minCapacity: 1, maxCapacity: 3 })
     this.prodAsg = this.createAutoscalingGroups('prod', { desiredCapacity: 1, minCapacity: 1, maxCapacity: 4 })
     this.createCodedeployApplication()
-    this.createCodedeployDeploymentGroup([this.testAsg], 'test')
-    this.createCodedeployDeploymentGroup([this.prodAsg], 'prod')
-    this.createCodedeployDeploymentConfig()
+    this.testDeploymentGroup = this.createCodedeployDeploymentGroup([this.testAsg], 'test')
+    this.prodDeploymentGroup = this.createCodedeployDeploymentGroup([this.prodAsg], 'prod')
+    this.createCodedeployDeploymentConfig()  // just a test of creation, no need to use it
 
-    // this.createCodepipeline()
+    // codepipeline
+    this.createCodepipeline()
   }
 
   // CODECOMMIT REPOSITORY
@@ -87,6 +92,13 @@ export class CicdStack extends cdk.Stack {
       assumedBy: new iam.ServicePrincipal('codedeploy.amazonaws.com'),
     });
     this.codedeployRole.attachInlinePolicy(getCodedeployPolicy(this, 'codedeploy', this.props));
+
+    // CODEPIPELINE ROLE
+    this.codepipelineRole = new iam.Role(this, 'codepipeline-role', {
+      roleName: 'codepipelineRole',
+      assumedBy: new iam.ServicePrincipal('codepipeline.amazonaws.com'),
+    });
+    this.codepipelineRole.attachInlinePolicy(getCodepipelinePolicy(this, 'codepipeline', this.props));
   }
 
   // S3 BUCKET
@@ -102,7 +114,7 @@ export class CicdStack extends cdk.Stack {
       bucketName: this.props.bucketName,
       encryption: s3.BucketEncryption.UNENCRYPTED,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      versioned: false
+      versioned: true
     });
   }
 
@@ -220,8 +232,8 @@ export class CicdStack extends cdk.Stack {
     });
   }
 
-  createCodedeployDeploymentGroup(autoScalingGroups: autoscaling.AutoScalingGroup[], environment: string) {
-    const deploymentGroup = new codedeploy.ServerDeploymentGroup(this, `${environment}-deployment-group`, {
+  createCodedeployDeploymentGroup(autoScalingGroups: autoscaling.AutoScalingGroup[], environment: string): codedeploy.ServerDeploymentGroup {
+    return new codedeploy.ServerDeploymentGroup(this, `${environment}-deployment-group`, {
       application: this.codedeployApplication,
       autoScalingGroups: autoScalingGroups,
       deploymentGroupName: `${environment}DeploymentGroup`,
@@ -262,6 +274,17 @@ export class CicdStack extends cdk.Stack {
 
   // CODEPIPELINE PROJECT
   createCodepipeline() {
+    // Defines the artifact representing the sourcecode
+    const sourceArtifact = new codepipeline.Artifact();
+    const buildOutput = new codepipeline.Artifact();
+
+    const pipelineProject = new codebuild.PipelineProject(this, 'pipeline-project', {
+      environment: {
+        buildImage: codebuild.LinuxBuildImage.STANDARD_2_0,
+      },
+      role: this.codepipelineRole
+    });
+
     const pipeline = new codepipeline.Pipeline(this, 'first-pipeline', {
       pipelineName: 'MyPipeline',
       crossAccountKeys: false,  // if true, KMS Customer Master Keys are created which have a cost of $1/month
@@ -276,20 +299,43 @@ export class CicdStack extends cdk.Stack {
     });
 
     const sourceOutput = new codepipeline.Artifact(this.artifactName);
-    const sourceAction = new codepipeline_actions.CodeCommitSourceAction({
-      actionName: 'CodeCommit',
-      repository: this.repository,
-      output: sourceOutput,
-    });
+
     pipeline.addStage({
       stageName: 'Source',
-      actions: [sourceAction],
+      actions: [
+        new codepipeline_actions.CodeCommitSourceAction({
+          actionName: 'CodeCommitSource',
+          repository: this.repository,
+          output: sourceOutput,
+        })],
       // placement: {
       //   // note: you can only specify one of the below properties
       //   rightBefore: anotherStage,
       //   justAfter: anotherStage
       // }
     });
-  
+
+    pipeline.addStage({
+      stageName: 'Build',
+      actions: [
+        new codepipeline_actions.CodeBuildAction({
+          actionName: 'Codebuild',
+          project: pipelineProject,
+          input: sourceOutput,
+          outputs: [buildOutput],
+        })
+      ],
+    });
+
+    pipeline.addStage({
+      stageName: 'Deploy',
+      actions: [
+        new codepipeline_actions.CodeDeployServerDeployAction({
+          actionName: 'Codebuild',
+          input: sourceOutput,
+          deploymentGroup: this.testDeploymentGroup
+        })],
+    });
+
   }
 }
