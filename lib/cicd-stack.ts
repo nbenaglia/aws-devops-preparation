@@ -24,6 +24,7 @@ export class CicdStack extends cdk.Stack {
   ec2Role: iam.Role
   ec2InstanceProfile: iam.CfnInstanceProfile
   codecommitRole: iam.Role
+  codebuildProject: codebuild.Project
   codebuildRole: iam.Role
   codedeployRole: iam.Role
   codepipelineRole: iam.Role
@@ -157,7 +158,7 @@ export class CicdStack extends cdk.Stack {
 
   // CODEBUILD PROJECT
   createCodebuild() {
-    new codebuild.Project(this, 'codebuild-project', {
+    this.codebuildProject = new codebuild.Project(this, 'codebuild-project', {
       artifacts: codebuild.Artifacts.s3({
         bucket: this.bucket,
         name: this.artifactName,
@@ -286,25 +287,6 @@ export class CicdStack extends cdk.Stack {
     const sourceArtifact = new codepipeline.Artifact(this.artifactName);
     const buildArtifact = new codepipeline.Artifact();
 
-    const pipelineProject = new codebuild.PipelineProject(this, 'pipeline-project', {
-      environment: {
-        buildImage: codebuild.LinuxBuildImage.STANDARD_2_0,
-      },
-      logging: {
-        cloudWatch: {
-          enabled: true,
-          prefix: 'myCodepipeline',
-          logGroup: new logs.LogGroup(this, `codepipeline-loggroup`, {
-            logGroupName: 'myCodepipeline',
-            retention: RetentionDays.ONE_DAY,
-            removalPolicy: RemovalPolicy.DESTROY
-          }),
-        }
-      },
-      role: this.codebuildRole,
-      timeout: Duration.hours(1)
-    });
-
     const pipeline = new codepipeline.Pipeline(this, 'first-pipeline', {
       artifactBucket: this.bucket,
       pipelineName: 'MyPipeline',
@@ -341,7 +323,7 @@ export class CicdStack extends cdk.Stack {
       actions: [
         new codepipeline_actions.CodeBuildAction({
           actionName: 'Codebuild',
-          project: pipelineProject,
+          project: this.codebuildProject,
           input: sourceArtifact,
           outputs: [buildArtifact],
         })
