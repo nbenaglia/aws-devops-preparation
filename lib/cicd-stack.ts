@@ -274,18 +274,31 @@ export class CicdStack extends cdk.Stack {
 
   // CODEPIPELINE PROJECT
   createCodepipeline() {
-    // Defines the artifact representing the sourcecode
-    const sourceArtifact = new codepipeline.Artifact();
-    const buildOutput = new codepipeline.Artifact();
+    // Artifacts
+    const sourceArtifact = new codepipeline.Artifact(this.artifactName);
+    const buildArtifact = new codepipeline.Artifact();
 
     const pipelineProject = new codebuild.PipelineProject(this, 'pipeline-project', {
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_2_0,
       },
-      role: this.codepipelineRole
+      logging: {
+        cloudWatch: {
+          enabled: true,
+          prefix: 'myCodepipeline',
+          logGroup: new logs.LogGroup(this, `codepipeline-loggroup`, {
+            logGroupName: 'myCodepipeline',
+            retention: RetentionDays.ONE_DAY,
+            removalPolicy: RemovalPolicy.DESTROY
+          }),
+        }
+      },
+      role: this.codepipelineRole,
+      timeout: Duration.hours(1)
     });
 
     const pipeline = new codepipeline.Pipeline(this, 'first-pipeline', {
+      artifactBucket: this.bucket,
       pipelineName: 'MyPipeline',
       crossAccountKeys: false,  // if true, KMS Customer Master Keys are created which have a cost of $1/month
       // stages: [    // or use .addStage method
@@ -298,15 +311,14 @@ export class CicdStack extends cdk.Stack {
       // ],
     });
 
-    const sourceOutput = new codepipeline.Artifact(this.artifactName);
-
     pipeline.addStage({
       stageName: 'Source',
       actions: [
         new codepipeline_actions.CodeCommitSourceAction({
           actionName: 'CodeCommitSource',
+          branch: 'master',
+          output: sourceArtifact,
           repository: this.repository,
-          output: sourceOutput,
         })],
       // placement: {
       //   // note: you can only specify one of the below properties
@@ -321,8 +333,8 @@ export class CicdStack extends cdk.Stack {
         new codepipeline_actions.CodeBuildAction({
           actionName: 'Codebuild',
           project: pipelineProject,
-          input: sourceOutput,
-          outputs: [buildOutput],
+          input: sourceArtifact,
+          outputs: [buildArtifact],
         })
       ],
     });
@@ -332,10 +344,27 @@ export class CicdStack extends cdk.Stack {
       actions: [
         new codepipeline_actions.CodeDeployServerDeployAction({
           actionName: 'Codebuild',
-          input: sourceOutput,
+          input: sourceArtifact,
           deploymentGroup: this.testDeploymentGroup
         })],
     });
 
+
+    // Some events
+    // const rule = pipelineProject.onStateChange('OnBuildStarted', { target });
+    // rule.addEventPattern({
+    //   detail: {
+    //     'build-status': [
+    //       "IN_PROGRESS",
+    //       "SUCCEEDED",
+    //       "FAILED",
+    //       "STOPPED"
+    //     ]
+    //   }
+    // })
+
   }
+
+  ///////////////////////////////////////////
+  //  CodeBuild is not authorized to perform: sts:AssumeRole on arn:aws:iam::219106556355:role/codepipelineRole (Service
 }
