@@ -17,12 +17,13 @@ import { AmazonLinuxEdition, AmazonLinuxGeneration } from '@aws-cdk/aws-ec2';
 import { ComputeType, LinuxBuildImage } from '@aws-cdk/aws-codebuild';
 import { RetentionDays } from '@aws-cdk/aws-logs';
 import { MinimumHealthyHosts } from '@aws-cdk/aws-codedeploy';
-import { getCodedeployPolicy, getCodepipelinePolicy, getS3Policy, getSsmPolicy } from './inline-policies';
+import { getCodecommitPolicy, getCodedeployPolicy, getCodepipelinePolicy, getS3Policy, getSsmPolicy } from './inline-policies';
 
 export class CicdStack extends cdk.Stack {
   artifactName: string = 'myArtifact'
   ec2Role: iam.Role
   ec2InstanceProfile: iam.CfnInstanceProfile
+  codecommitRole: iam.Role
   codebuildRole: iam.Role
   codedeployRole: iam.Role
   codepipelineRole: iam.Role
@@ -77,6 +78,13 @@ export class CicdStack extends cdk.Stack {
     });
     this.ec2Role.attachInlinePolicy(getS3Policy(this, 's3-ec2', this.props));
     this.ec2Role.attachInlinePolicy(getSsmPolicy(this, 'ssm-ec2', this.props));
+
+    // CODECOMMIT ROLE
+    this.codecommitRole = new iam.Role(this, 'codecommit-role', {
+      roleName: 'codecommitRole',
+      assumedBy: new iam.ServicePrincipal('codecommit.amazonaws.com'),
+    });
+    this.codecommitRole.attachInlinePolicy(getCodecommitPolicy(this, 'codecommitRole', this.props));
 
     // CODEBUILD ROLE
     this.codebuildRole = new iam.Role(this, 'codebuild-role', {
@@ -149,7 +157,7 @@ export class CicdStack extends cdk.Stack {
 
   // CODEBUILD PROJECT
   createCodebuild() {
-    new codebuild.Project(this, 'MyFirstCodeCommitProject', {
+    new codebuild.Project(this, 'codebuild-project', {
       artifacts: codebuild.Artifacts.s3({
         bucket: this.bucket,
         name: this.artifactName,
@@ -162,7 +170,7 @@ export class CicdStack extends cdk.Stack {
         buildImage: LinuxBuildImage.AMAZON_LINUX_2_3,
         computeType: ComputeType.SMALL,
       },
-      projectName: 'myFirstCodeCommitProject',
+      projectName: 'codebuild-project',
       role: this.codebuildRole,
       source: codebuild.Source.codeCommit({
         repository: this.repository
@@ -170,9 +178,9 @@ export class CicdStack extends cdk.Stack {
       logging: {
         cloudWatch: {
           enabled: true,
-          prefix: 'myCodebuild',
+          prefix: 'mycodebuild',
           logGroup: new logs.LogGroup(this, `codebuild-loggroup`, {
-            logGroupName: 'myCodebuild',
+            logGroupName: 'mycodebuild',
             retention: RetentionDays.ONE_DAY,
             removalPolicy: RemovalPolicy.DESTROY
           }),
@@ -293,7 +301,7 @@ export class CicdStack extends cdk.Stack {
           }),
         }
       },
-      role: this.codepipelineRole,
+      role: this.codebuildRole,
       timeout: Duration.hours(1)
     });
 
@@ -301,6 +309,7 @@ export class CicdStack extends cdk.Stack {
       artifactBucket: this.bucket,
       pipelineName: 'MyPipeline',
       crossAccountKeys: false,  // if true, KMS Customer Master Keys are created which have a cost of $1/month
+      role: this.codepipelineRole,
       // stages: [    // or use .addStage method
       //   {
       //     stageName: 'Source',

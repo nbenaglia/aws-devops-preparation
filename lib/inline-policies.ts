@@ -63,6 +63,39 @@ export function getS3Policy(scope: Construct, id: string, props: CicdProps): iam
   return policy
 }
 
+export function getCodecommitPolicy(scope: Construct, id: string, props: CicdProps): iam.Policy {
+  let policy = new iam.Policy(scope, id, { policyName: id });
+  policy.addStatements(
+    new iam.PolicyStatement({
+      actions: [
+        's3:GetObject*',
+        's3:GetBucket*',
+        's3:List*',
+        's3:DeleteObject*',
+        's3:PutObject',
+        's3:Abort*',
+      ],
+      resources: [
+        `arn:aws:s3:::${props.bucketName}`,
+        `arn:aws:s3:::${props.bucketName}/*`
+      ]
+    }),
+    new iam.PolicyStatement({
+      actions: [
+        'codecommit:GetBranch',
+        'codecommit:GetCommit',
+        'codecommit:UploadArchive',
+        'codecommit:GetUploadArchiveStatus',
+        'codecommit:CancelUploadArchive'
+      ],
+      resources: [
+        `arn:aws:codecommit:eu-west-1:${props.env.account}:${props.bucketName}`,
+      ]
+    })
+  );
+  return policy;
+}
+
 export function getCodedeployPolicy(scope: Construct, id: string, props: StackProps): iam.Policy {
   let policy = new iam.Policy(scope, id, { policyName: id });
   policy.addStatements(
@@ -89,7 +122,7 @@ export function getCodedeployPolicy(scope: Construct, id: string, props: StackPr
         'iam:ListRoles',
         'iam:PassRole',
         'iam:PutRolePolicy',
-        'iam:RemoveRoleFromInstanceProfile', 
+        'iam:RemoveRoleFromInstanceProfile',
         's3:*',
         'ssm:*'
       ],
@@ -105,7 +138,9 @@ export function getCodepipelinePolicy(scope: Construct, id: string, props: Stack
   policy.addStatements(
     new iam.PolicyStatement({
       actions: [
+        'codebuild:*',
         'codepipeline:*',
+        'logs:*',
         's3:*',
         'ssm:*',
       ],
