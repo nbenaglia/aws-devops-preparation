@@ -1,5 +1,7 @@
 import * as autoscaling from '@aws-cdk/aws-autoscaling';
 import * as cdk from '@aws-cdk/core';
+import * as ecs from '@aws-cdk/aws-ecs';
+import * as elbv2 from '@aws-cdk/aws-elasticloadbalancingv2';
 import * as logs from '@aws-cdk/aws-logs';
 import * as cloudwatch from '@aws-cdk/aws-cloudwatch';
 import * as codebuild from '@aws-cdk/aws-codebuild';
@@ -10,7 +12,7 @@ import * as codepipeline_actions from '@aws-cdk/aws-codepipeline-actions';
 import * as ec2 from '@aws-cdk/aws-ec2';
 import * as iam from '@aws-cdk/aws-iam';
 import * as s3 from '@aws-cdk/aws-s3';
-import { AsgCapacity, CicdProps } from './utils';
+import { AsgCapacity, CicdProps, DeploymentType } from './utils';
 import { Duration, RemovalPolicy, Tags } from '@aws-cdk/core';
 import { Signals } from '@aws-cdk/aws-autoscaling';
 import { AmazonLinuxEdition, AmazonLinuxGeneration } from '@aws-cdk/aws-ec2';
@@ -18,6 +20,8 @@ import { ComputeType, LinuxBuildImage } from '@aws-cdk/aws-codebuild';
 import { RetentionDays } from '@aws-cdk/aws-logs';
 import { MinimumHealthyHosts } from '@aws-cdk/aws-codedeploy';
 import { getCodecommitPolicy, getCodedeployPolicy, getCodepipelinePolicy, getS3Policy, getSsmPolicy } from './inline-policies';
+import { NetworkMode } from '@aws-cdk/aws-ecs';
+import { error } from 'console';
 
 export class CicdStack extends cdk.Stack {
   artifactName: string = 'myArtifact'
@@ -35,8 +39,10 @@ export class CicdStack extends cdk.Stack {
   props: CicdProps
   prodAsg: autoscaling.AutoScalingGroup
   testAsg: autoscaling.AutoScalingGroup
-  prodDeploymentGroup: codedeploy.ServerDeploymentGroup
-  testDeploymentGroup: codedeploy.ServerDeploymentGroup
+  prodServerDeploymentGroup: codedeploy.IServerDeploymentGroup
+  testServerDeploymentGroup: codedeploy.IServerDeploymentGroup
+  prodEcsDeploymentGroup: codedeploy.IEcsDeploymentGroup
+  testEcsDeploymentGroup: codedeploy.IEcsDeploymentGroup
 
   constructor(scope: cdk.Construct, id: string, props: CicdProps) {
     super(scope, id, props);
@@ -51,12 +57,23 @@ export class CicdStack extends cdk.Stack {
     this.createCodebuild()
 
     // codedeploy
-    this.testAsg = this.createAutoscalingGroups('test', { desiredCapacity: 2, minCapacity: 1, maxCapacity: 3 })
-    this.prodAsg = this.createAutoscalingGroups('prod', { desiredCapacity: 1, minCapacity: 1, maxCapacity: 4 })
     this.createCodedeployApplication()
-    this.testDeploymentGroup = this.createCodedeployDeploymentGroup([this.testAsg], 'test')
-    this.prodDeploymentGroup = this.createCodedeployDeploymentGroup([this.prodAsg], 'prod')
-    this.createCodedeployDeploymentConfig()  // just a test of creation, no need to use it
+    if (props.deploymentType == DeploymentType.SERVER) {
+      this.testAsg = this.createAutoscalingGroups('test', { desiredCapacity: 2, minCapacity: 1, maxCapacity: 3 })
+      this.prodAsg = this.createAutoscalingGroups('prod', { desiredCapacity: 1, minCapacity: 1, maxCapacity: 4 })
+      this.testServerDeploymentGroup = this.createCodedeployDeploymentGroupForServer([this.testAsg], 'test')
+      this.prodServerDeploymentGroup = this.createCodedeployDeploymentGroupForServer([this.prodAsg], 'prod')
+      this.createCodedeployDeploymentConfig()  // just a test of creation, no need to use it
+    }
+    if (props.deploymentType == DeploymentType.ECS) {
+      this.createEcsCluster()
+      this.testEcsDeploymentGroup = this.createCodedeployDeploymentGroupForEcs('test')
+      this.prodEcsDeploymentGroup = this.createCodedeployDeploymentGroupForEcs('prod')
+    }
+    if (props.deploymentType == DeploymentType.LAMBDA) {
+      // TODO
+      throw new Error('Lambda must be implemented.');
+    }
 
     // codepipeline
     this.createCodepipeline()
@@ -241,7 +258,7 @@ export class CicdStack extends cdk.Stack {
     });
   }
 
-  createCodedeployDeploymentGroup(autoScalingGroups: autoscaling.AutoScalingGroup[], environment: string): codedeploy.ServerDeploymentGroup {
+  createCodedeployDeploymentGroupForServer(autoScalingGroups: autoscaling.AutoScalingGroup[], environment: string): codedeploy.IServerDeploymentGroup {
     return new codedeploy.ServerDeploymentGroup(this, `${environment}-deployment-group`, {
       application: this.codedeployApplication,
       autoScalingGroups: autoScalingGroups,
@@ -268,6 +285,68 @@ export class CicdStack extends cdk.Stack {
         stoppedDeployment: true, // default: false
         deploymentInAlarm: false, // default: true if you provided any alarms, false otherwise
       },
+    });
+  }
+
+  createEcsCluster() {
+    const vpc = ec2.Vpc.fromLookup(this, "my-lb-vpc", { vpcId: this.props.vpcId })
+
+    const lb = new elbv2.ApplicationLoadBalancer(this, 'lb', {
+      vpc,
+      internetFacing: true,
+      securityGroup: this.ec2SecurityGroup
+    });
+
+    const listener = lb.addListener('Listener', {
+      port: 80,
+
+      // 'open: true' is the default, you can leave it out if you want. Set it
+      // to 'false' and use `listener.connections` if you want to be selective
+      // about who can access the load balancer.
+      open: false,
+    });
+
+    const cluster = new ecs.Cluster(this, 'ecs-cluster', {
+      vpc
+    });
+
+    cluster.addCapacity('bottlerocket-asg', {
+      minCapacity: 2,
+      instanceType: new ec2.InstanceType('t3.micro'),
+      machineImageType: ecs.MachineImageType.BOTTLEROCKET,
+    });
+
+    const taskDefinition = new ecs.TaskDefinition(this, 'TaskDef', {
+      memoryMiB: '512',
+      cpu: '256',
+      networkMode: NetworkMode.AWS_VPC,
+      compatibility: ecs.Compatibility.EC2_AND_FARGATE,
+    });
+
+    const service = new ecs.Ec2Service(this, 'Service', {
+      cluster: cluster,
+      taskDefinition: taskDefinition,
+      securityGroup: this.ec2SecurityGroup
+    });
+
+    const scaling = service.autoScaleTaskCount({ maxCapacity: 10 });
+    scaling.scaleOnCpuUtilization('CpuScaling', {
+      targetUtilizationPercent: 50
+    });
+
+    scaling.scaleOnRequestCount('RequestScaling', {
+      requestsPerTarget: 10000,
+      targetGroup: listener.addTargets('lb-target', {
+        port: 80,
+      })
+    })
+  }
+
+  createCodedeployDeploymentGroupForEcs(environment: string): codedeploy.IEcsDeploymentGroup {
+    return codedeploy.EcsDeploymentGroup.fromEcsDeploymentGroupAttributes(this, `${environment}-deployment-group`, {
+      application: this.codedeployApplication,
+      deploymentGroupName: `${environment}DeploymentGroup`,
+      deploymentConfig: codedeploy.EcsDeploymentConfig.ALL_AT_ONCE,
     });
   }
 
@@ -336,7 +415,7 @@ export class CicdStack extends cdk.Stack {
         new codepipeline_actions.CodeDeployServerDeployAction({
           actionName: 'Codebuild',
           input: sourceArtifact,
-          deploymentGroup: this.testDeploymentGroup
+          deploymentGroup: this.testServerDeploymentGroup
         })],
     });
 
@@ -355,7 +434,4 @@ export class CicdStack extends cdk.Stack {
     // })
 
   }
-
-  ///////////////////////////////////////////
-  //  CodeBuild is not authorized to perform: sts:AssumeRole on arn:aws:iam::219106556355:role/codepipelineRole (Service
 }

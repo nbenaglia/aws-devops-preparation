@@ -2,7 +2,7 @@
 import 'source-map-support/register';
 import * as cdk from '@aws-cdk/core';
 import { CicdStack } from '../lib/cicd-stack';
-import { CicdProps } from '../lib/utils';
+import { CicdProps, DeploymentType } from '../lib/utils';
 
 // Set properties for stacks
 let properties: CicdProps = {
@@ -21,6 +21,8 @@ let properties: CicdProps = {
 
 const app = new cdk.App();
 
+// Choose ECS, SERVER or LAMBDA
+properties.deploymentType = DeploymentType.ECS
 new CicdStack(app, 'cicd-stack', properties);
 
 
