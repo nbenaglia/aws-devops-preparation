@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 import 'source-map-support/register';
 import * as cdk from '@aws-cdk/core';
-import { CicdStack } from '../lib/cicd-stack';
 import { CicdProps, DeploymentType } from '../lib/utils';
+import { Ec2CicdStack } from '../lib/ec2-cicd-stack';
+import { EcsCicdStack } from '../lib/ecs-cicd-stack';
 
 // Set properties for stacks
 let properties: CicdProps = {
   availabilityZone: 'eu-west-1a',
   bucketName: 'nbenaglia',
+  deploymentType: DeploymentType.ECS, // Choose ECS, SERVER or LAMBDA
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION
@@ -21,8 +23,17 @@ let properties: CicdProps = {
 
 const app = new cdk.App();
 
-// Choose ECS, SERVER or LAMBDA
-properties.deploymentType = DeploymentType.ECS
-new CicdStack(app, 'cicd-stack', properties);
+switch (properties.deploymentType) {
+  case DeploymentType.SERVER:
+    new Ec2CicdStack(app, 'ec2-cicd-stack', properties);
+    break;
+
+  case DeploymentType.ECS:
+    new EcsCicdStack(app, 'ecs-cicd-stack', properties);
+    break;
+
+  default:
+    throw new Error(`Unsupported value in Enum`);
+}
 
 

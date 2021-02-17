@@ -1,5 +1,6 @@
 import * as autoscaling from '@aws-cdk/aws-autoscaling';
 import * as cdk from '@aws-cdk/core';
+import * as ecr from '@aws-cdk/aws-ecr';
 import * as ecs from '@aws-cdk/aws-ecs';
 import * as elbv2 from '@aws-cdk/aws-elasticloadbalancingv2';
 import * as logs from '@aws-cdk/aws-logs';
@@ -20,13 +21,14 @@ import { ComputeType, LinuxBuildImage } from '@aws-cdk/aws-codebuild';
 import { RetentionDays } from '@aws-cdk/aws-logs';
 import { MinimumHealthyHosts } from '@aws-cdk/aws-codedeploy';
 import { getCodecommitPolicy, getCodedeployPolicy, getCodepipelinePolicy, getS3Policy, getSsmPolicy } from './inline-policies';
-import { NetworkMode } from '@aws-cdk/aws-ecs';
-import { error } from 'console';
+import { ContainerImage, NetworkMode } from '@aws-cdk/aws-ecs';
+import { Artifact } from '@aws-cdk/aws-codepipeline';
 
-export class CicdStack extends cdk.Stack {
+export class EcsCicdStack extends cdk.Stack {
   artifactName: string = 'myArtifact'
   ec2Role: iam.Role
   ec2InstanceProfile: iam.CfnInstanceProfile
+  ecrRepository: ecr.Repository
   codecommitRole: iam.Role
   codebuildProject: codebuild.Project
   codebuildRole: iam.Role
@@ -39,8 +41,6 @@ export class CicdStack extends cdk.Stack {
   props: CicdProps
   prodAsg: autoscaling.AutoScalingGroup
   testAsg: autoscaling.AutoScalingGroup
-  prodServerDeploymentGroup: codedeploy.IServerDeploymentGroup
-  testServerDeploymentGroup: codedeploy.IServerDeploymentGroup
   prodEcsDeploymentGroup: codedeploy.IEcsDeploymentGroup
   testEcsDeploymentGroup: codedeploy.IEcsDeploymentGroup
 
@@ -58,22 +58,12 @@ export class CicdStack extends cdk.Stack {
 
     // codedeploy
     this.createCodedeployApplication()
-    if (props.deploymentType == DeploymentType.SERVER) {
-      this.testAsg = this.createAutoscalingGroups('test', { desiredCapacity: 2, minCapacity: 1, maxCapacity: 3 })
-      this.prodAsg = this.createAutoscalingGroups('prod', { desiredCapacity: 1, minCapacity: 1, maxCapacity: 4 })
-      this.testServerDeploymentGroup = this.createCodedeployDeploymentGroupForServer([this.testAsg], 'test')
-      this.prodServerDeploymentGroup = this.createCodedeployDeploymentGroupForServer([this.prodAsg], 'prod')
-      this.createCodedeployDeploymentConfig()  // just a test of creation, no need to use it
-    }
-    if (props.deploymentType == DeploymentType.ECS) {
-      this.createEcsCluster()
-      this.testEcsDeploymentGroup = this.createCodedeployDeploymentGroupForEcs('test')
-      this.prodEcsDeploymentGroup = this.createCodedeployDeploymentGroupForEcs('prod')
-    }
-    if (props.deploymentType == DeploymentType.LAMBDA) {
-      // TODO
-      throw new Error('Lambda must be implemented.');
-    }
+    this.testAsg = this.createAutoscalingGroups('test', { desiredCapacity: 2, minCapacity: 1, maxCapacity: 3 })
+    this.prodAsg = this.createAutoscalingGroups('prod', { desiredCapacity: 1, minCapacity: 1, maxCapacity: 4 })
+    this.createEcrRepository()
+    this.createEcsCluster()
+    this.testEcsDeploymentGroup = this.createCodedeployDeploymentGroupForEcs('test')
+    this.prodEcsDeploymentGroup = this.createCodedeployDeploymentGroupForEcs('prod')
 
     // codepipeline
     this.createCodepipeline()
@@ -253,7 +243,7 @@ export class CicdStack extends cdk.Stack {
 
   // CODEDEPLOY PROJECT
   createCodedeployApplication() {
-    this.codedeployApplication = new codedeploy.ServerApplication(this, 'codedeploy-application', {
+    this.codedeployApplication = new codedeploy.EcsApplication(this, 'codedeploy-application', {
       applicationName: 'MyApplication',
     });
   }
@@ -288,6 +278,14 @@ export class CicdStack extends cdk.Stack {
     });
   }
 
+  createEcrRepository() {
+    this.ecrRepository = new ecr.Repository(this, 'ecr-repo', {
+      repositoryName: this.props.bucketName,
+      removalPolicy: RemovalPolicy.DESTROY,
+      imageScanOnPush: true
+    });
+  }
+
   createEcsCluster() {
     const vpc = ec2.Vpc.fromLookup(this, "my-lb-vpc", { vpcId: this.props.vpcId })
 
@@ -306,6 +304,28 @@ export class CicdStack extends cdk.Stack {
       open: false,
     });
 
+    const targetGroup = new elbv2.ApplicationTargetGroup(this, 'tg-group', {
+      vpc,
+      port: 80,
+      targetGroupName: 'name',
+      targetType: elbv2.TargetType.INSTANCE,
+    });
+
+    listener.addAction('default', {
+      priority: 10,
+      conditions: [
+        elbv2.ListenerCondition.pathPatterns(['/']),
+      ],
+      action: elbv2.ListenerAction.fixedResponse(200, {
+        contentType: elbv2.ContentType.TEXT_PLAIN,
+        messageBody: 'OK',
+      })
+    });
+
+    listener.addTargetGroups('ecs-service-targe', {
+      targetGroups: [targetGroup],
+    });
+
     const cluster = new ecs.Cluster(this, 'ecs-cluster', {
       vpc
     });
@@ -316,12 +336,19 @@ export class CicdStack extends cdk.Stack {
       machineImageType: ecs.MachineImageType.BOTTLEROCKET,
     });
 
-    const taskDefinition = new ecs.TaskDefinition(this, 'TaskDef', {
-      memoryMiB: '512',
-      cpu: '256',
-      networkMode: NetworkMode.AWS_VPC,
+    const taskDefinition = new ecs.TaskDefinition(this, 'task-definition', {
       compatibility: ecs.Compatibility.EC2_AND_FARGATE,
+      cpu: '256',
+      executionRole: this.ec2Role,
+      family: 'my-task-family',
+      networkMode: NetworkMode.AWS_VPC,
+      memoryMiB: '512',
+      taskRole: this.ec2Role,
     });
+    taskDefinition.addContainer('my-container', {
+      image: ContainerImage.fromEcrRepository(this.ecrRepository),
+      memoryReservationMiB: 500
+    })
 
     const service = new ecs.Ec2Service(this, 'Service', {
       cluster: cluster,
@@ -365,6 +392,8 @@ export class CicdStack extends cdk.Stack {
     // Artifacts
     const sourceArtifact = new codepipeline.Artifact(this.artifactName);
     const buildArtifact = new codepipeline.Artifact();
+    const appspecArtifact = new Artifact('appspec-template')
+    const taskDefinitionArtifact = new Artifact('ecs-task-definition')
 
     const pipeline = new codepipeline.Pipeline(this, 'first-pipeline', {
       artifactBucket: this.bucket,
@@ -412,13 +441,13 @@ export class CicdStack extends cdk.Stack {
     pipeline.addStage({
       stageName: 'Deploy',
       actions: [
-        new codepipeline_actions.CodeDeployServerDeployAction({
+        new codepipeline_actions.CodeDeployEcsDeployAction({
           actionName: 'Codebuild',
-          input: sourceArtifact,
-          deploymentGroup: this.testServerDeploymentGroup
+          appSpecTemplateInput: buildArtifact,
+          taskDefinitionTemplateInput: buildArtifact,
+          deploymentGroup: this.testEcsDeploymentGroup,
         })],
-    });
-
+    })
 
     // Some events
     // const rule = pipelineProject.onStateChange('OnBuildStarted', { target });
